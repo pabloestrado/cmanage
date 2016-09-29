@@ -1,0 +1,27 @@
+#!/bin/sh
+echo "Content-type: text/plain"
+echo
+
+# Import cluster config
+source /etc/cmanage.conf
+
+# Check if request is health request
+echo $REQUEST_URI | grep "?health$" > /dev/null
+if [ $? == 0 ]; then
+	# Run node scheck script
+	$CHECKSCRIPT
+	if [ $? == 0 ]; then
+		# Node is healthy
+		echo OK
+	else
+		# Node is down
+		echo NO
+	fi
+fi
+
+
+
+
+
+
+

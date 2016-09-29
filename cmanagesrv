@@ -1,0 +1,122 @@
+#!/bin/sh
+
+# Load config file
+source /etc/cmanage.conf
+
+# Check if this node is master
+ifconfig | grep "$MASTER" > /dev/null
+if [ $? == 0  ]; then
+  export IAMMASTER=1
+  echo "I am master node in config"
+else
+  export IAMMASTER=0
+  echo "I am slave node in config"
+fi
+
+echo "Master selfcheck:" $IAMMASTER
+
+echo "Starting main loop"
+
+# Set virtual IP
+vipset () {
+  # Sleep to be sure VIP was removed on other node
+  sleep $TIMEOUT                   
+  ifconfig $VIPIF $VIP$MASK up                 
+  ifconfig $VIPIF $VIP$MASK up                 
+  touch $VIPFLAG 
+}
+
+# Disable VIP interface
+vipdown () {
+  ifconfig $VIPIF down
+  echo "Shutting down"
+  rm $VIPFLAG        
+}
+
+# Shutdown VIP interface on exit
+onexit () {
+  echo "Shutting down"
+  vipdown
+  exit 0
+}
+
+# Trap exit signal
+trap onexit INT TERM EXIT
+
+# Check who I am
+if [ $IAMMASTER == 1 ]; then
+  # I am master node
+  echo "Starting Master check loop"
+
+  while :
+  do
+    echo "Master healthcheck"                         
+    $CHECKSCRIPT
+    export HEALTH=$? 
+    if [ $HEALTH == 0 ]; then
+      # I am healthy
+      if [ -e $VIPFLAG ]; then
+        echo "Master is healthy, Virtual IP already set. Sleeping."
+      else
+        echo "Maser is helathy, Virtual IP is not set, setting it"
+        vipset
+      fi
+    else
+      # I am not healthy
+      echo "Master is not healthy!"
+      if [ -e $VIPFLAG ]; then
+        echo "Disabling VIP interface"
+        vipdown
+      else
+        echo "Master is not healthy, Virtual IP is not set"
+      fi
+    fi
+    # Sleep for next iteration
+    sleep $TIMEOUT    
+  done
+else
+  # I am slave node
+  echo "Starting slave check loop"
+  while :
+  do
+    echo "Slave healthcheck"
+    $CHECKSCRIPT
+    export HEALTH=$?
+    echo "Health status is $HEALTH"
+
+    # Check master's health
+    wget -O - http://$MASTER/cgi-bin/cmanage?health | grep OK > /dev/null
+    if [ $? == 0 ]; then
+      echo "Master is healthy"
+      if [ -e $VIPFLAG ]; then
+        echo "Virtual IP is set but master is healthy, removing"
+        vipdown
+      fi
+
+    else
+      # Master is not healthy
+      echo "Master check is failed"
+      #Check if Virtual IP is set
+      if [ -e $VIPFLAG ]; then
+        if [ $HEALTH == 0 ]; then
+          echo "Virtual IP already set and I am healthy"
+        else
+          echo "Virtual IP already set but healthcheck is failed, removing"
+          vipdown
+        fi
+
+      else
+        # Check if slave node is healthy
+        if [ $HEALTH == 0 ]; then
+
+          echo "Setting virtual IP $VIP"          
+          vipset
+        else
+          echo "Master is down, but slave node health check failed. Virtual IP is not set!"
+        fi
+      fi
+    fi
+    # Sleep for next iteration
+    sleep $TIMEOUT
+  done
+fi
